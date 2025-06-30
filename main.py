@@ -36,8 +36,8 @@ void main() {
     
     // Gradient from blue (low) to green (mid) to red (high)
     vec3 low_color = vec3(0.2, 0.3, 0.8);    // Blue
-    vec3 mid_color = vec3(0.3, 0.8, 0.3);    // Green
-    vec3 high_color = vec3(0.8, 0.3, 0.2);   // Red
+    vec3 mid_color = vec3(0.0, 0.9, 0.2);    // Green
+    vec3 high_color = vec3(0.9, 0.2, 0.2);   // Red
     
     vec3 color;
     if (normalized_height < 0.5) {
@@ -62,33 +62,34 @@ class Terrain:
         self.HALF_HEIGHT = self.HEIGHT / 2
         self.HALF_DEPTH = self.DEPTH / 2
 
-        self.vertex_amount = 10000
+        self.vertex_amount = 100000
 
         self.rows, self.cols = calculate_rows_cols(self.WIDTH, self.DEPTH, self.vertex_amount) # gets the amount of cols and rows needed depending on the vertex amount
 
-        top_vertices = self.generate_top_face_vertices()
+        self.top_vertices = self.generate_top_face_vertices()
+        self.top_vertices = self.top_vertices.reshape(-1, 3)  # shape (N, 3)
+
+        self.BASE_HEIGHT = 0
 
         self.bottom_vertices = np.array([
-            [-self.HALF_WIDTH, 0,  self.HALF_DEPTH],  # front-bottom-left
-             [self.HALF_WIDTH, 0,  self.HALF_DEPTH],  # front-bottom-right
-            [-self.HALF_WIDTH, 0, -self.HALF_DEPTH],  # back-bottom-left
-             [self.HALF_WIDTH, 0, -self.HALF_DEPTH],  # back-bottom-right
+            [-self.HALF_WIDTH, self.BASE_HEIGHT,  self.HALF_DEPTH],  # front-bottom-left
+             [self.HALF_WIDTH, self.BASE_HEIGHT,  self.HALF_DEPTH],  # front-bottom-right
+            [-self.HALF_WIDTH, self.BASE_HEIGHT, -self.HALF_DEPTH],  # back-bottom-left
+             [self.HALF_WIDTH, self.BASE_HEIGHT, -self.HALF_DEPTH],  # back-bottom-right
         ], dtype='f4') # 32-bit float
 
-        top_vertices = top_vertices.reshape(-1, 3)  # ensure shape (N, 3)
-        self.vertices = np.vstack([self.bottom_vertices, top_vertices]).astype('f4')
+        # side vertices
+
+        self.side_vertices = self.generate_side_face_vertices()
+        self.side_vertices = self.side_vertices.reshape(-1, 3)  # shape (N, 3)
+
+        self.vertices = np.vstack([self.bottom_vertices, self.side_vertices, self.top_vertices]).astype('f4')
         
         # defines triangles using the vertex
 
         top_indices = self.generate_top_face_indices()
 
-        self.bottom_indices = np.array([
-            #0, 1, 2, 0, 2, 3,   # Front face 2 triangles on each face
-            #4, 5, 6, 4, 6, 7,   # Back face
-            0, 1, 2, 1, 3, 2,   # Bottom face
-            #1, 2, 6, 1, 6, 5,   # Right face
-            #3, 0, 4, 3, 4, 7    # Left face
-        ], dtype='i4') # 32-bit int
+        self.bottom_indices = np.array([ 0, 1, 2, 1, 3, 2, ], dtype='i4') # 32-bit int | only the bottom face is a single quad only, 2 triangles is needed
 
         self.indices = np.concatenate([self.bottom_indices, top_indices]).astype('i4')
 
@@ -102,6 +103,44 @@ class Terrain:
             for col in range(self.cols):
                 x = -self.HALF_WIDTH + (col / (self.cols - 1)) * self.WIDTH # x from -20 to +20
                 y = self.HEIGHT + height_manager(x, z)
+                vertices.extend([x, y, z])
+        return np.array(vertices, dtype='f4')
+    
+    def generate_side_face_vertices(self):
+        top_vertices = self.generate_top_face_vertices().reshape((self.rows, self.cols, 3))
+        vertices = []
+        z = -self.HALF_DEPTH
+
+        for col in range(self.cols): # front side | makes vertical strips of vertices with y same as the current row/col based on which side is being calculated
+            x = -self.HALF_WIDTH + (col / (self.cols - 1)) * self.WIDTH # starts with -20 and then has a factor based on the amount of cols and rows and adds that to the position and then scales that factor because the factor is a number between 0 and 1 and we need it to be between -20 and 20
+            y = 0
+            for row in range(self.rows):
+                if top_vertices[row][col][1] > y:
+                    y = self.BASE_HEIGHT + (row / (self.rows - 1)) * self.HEIGHT
+                vertices.extend([x, y, z])
+        
+        for col in range(self.cols): # back side
+            x = -self.HALF_WIDTH + (col / (self.cols - 1)) * self.WIDTH
+            z = self.HALF_DEPTH
+            for row in range(self.rows):
+                if top_vertices[row][col][1] > y:
+                    y = self.BASE_HEIGHT + (row / (self.rows - 1)) * self.HEIGHT
+                vertices.extend([x, y, z])
+
+        for row in range(self.rows): # left side
+            z = -self.HALF_DEPTH + (row / (self.rows - 1)) * self.DEPTH
+            x = -self.HALF_WIDTH
+            for col in range(self.cols):
+                if top_vertices[row][col][1] > y:
+                    y = self.BASE_HEIGHT + (col / (self.cols - 1)) * self.HEIGHT
+                vertices.extend([x, y, z])
+
+        for row in range(self.rows): # right side
+            z = -self.HALF_DEPTH + (row / (self.rows - 1)) * self.DEPTH
+            x = self.HALF_WIDTH
+            for col in range(self.cols):
+                if top_vertices[row][col][1] > y:
+                    y = self.BASE_HEIGHT + (col / (self.cols - 1)) * self.HEIGHT
                 vertices.extend([x, y, z])
         return np.array(vertices, dtype='f4')
     
@@ -120,20 +159,8 @@ class Terrain:
 
         return np.array(indices, dtype='i4')
     
-    def generate_side_face_vertices(self):
-        top_vertices = self.generate_top_face_vertices.reshape((self.rows, self.cols, 3))
-        vertices = []
-
-        base_height = 0 ## need to fix this function
-        for i in range(self.rows): # front
-            # get the corresponding vertex values from the top face
-            current_top_vertex = self.vertices / 3
-            for j in range(self.cols): # iterate through and add a vertex until the y value is the same
-                current_y_value += 1
-                if(not current_top_vertex[1] <= current_y_value):
-                    return
-
-
+    def generate_side_face_indices(self):
+        
 
     def create_vbo_ibo_vao(self, program): # vertices buffer object, index buffer object, vertex array object, (vbo, ibo translates the values into bytes)
         vbo = self.ctx.buffer(self.vertices.tobytes()) # (vbo, ibo translates the values into bytes)
