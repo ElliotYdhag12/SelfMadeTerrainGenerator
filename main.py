@@ -5,6 +5,7 @@ from pyrr import Matrix44
 import math
 import random
 import noise
+import a_star
 
 SCREEN_HEIGHT = 600
 SCREEN_WIDTH = 800
@@ -62,7 +63,7 @@ class Terrain:
         self.HALF_HEIGHT = self.HEIGHT / 2
         self.HALF_DEPTH = self.DEPTH / 2
 
-        self.vertex_amount = 100000
+        self.vertex_amount = 10000
 
         self.rows, self.cols = calculate_rows_cols(self.WIDTH, self.DEPTH, self.vertex_amount) # gets the amount of cols and rows needed depending on the vertex amount
 
@@ -80,18 +81,37 @@ class Terrain:
 
         # side vertices
 
-        self.side_vertices = self.generate_side_face_vertices()
-        self.side_vertices = self.side_vertices.reshape(-1, 3)  # shape (N, 3)
+        self.front_side_vertices = self.generate_side_face_vertices(1)  # front side
+        self.front_side_vertices = self.front_side_vertices.reshape(-1, 3)  # shape (N, 3)
 
-        self.vertices = np.vstack([self.bottom_vertices, self.side_vertices, self.top_vertices]).astype('f4')
+        self.back_side_vertices = self.generate_side_face_vertices(2)  # back side
+        self.back_side_vertices = self.back_side_vertices.reshape(-1, 3)
+
+        self.left_side_vertices = self.generate_side_face_vertices(3)  # left side
+        self.left_side_vertices = self.left_side_vertices.reshape(-1, 3)
+
+        self.right_side_vertices = self.generate_side_face_vertices(4)  # right side
+        self.right_side_vertices = self.right_side_vertices.reshape(-1, 3)
+
+        self.vertices = np.vstack([
+            self.bottom_vertices, 
+            self.front_side_vertices, 
+            self.back_side_vertices, 
+            self.left_side_vertices, 
+            self.right_side_vertices, 
+            self.top_vertices
+            ]).astype('f4')
         
         # defines triangles using the vertex
 
-        top_indices = self.generate_top_face_indices()
-
+        self.top_indices = self.generate_top_face_indices()
+        self.front_indices = self.generate_side_face_indices(1)  # front side
+        self.back_indices = self.generate_side_face_indices(2)  # back side
+        self.left_indices = self.generate_side_face_indices(3)  # left side
+        self.right_indices = self.generate_side_face_indices(4)  # right side
         self.bottom_indices = np.array([ 0, 1, 2, 1, 3, 2, ], dtype='i4') # 32-bit int | only the bottom face is a single quad only, 2 triangles is needed
 
-        self.indices = np.concatenate([self.bottom_indices, top_indices]).astype('i4')
+        self.indices = np.concatenate([self.bottom_indices, self.top_indices, self.back_indices, self.front_indices, self.right_indices, self.left_indices]).astype('i4')
 
         self.program = self.create_shader_program()
         self.vao = self.create_vbo_ibo_vao(self.program)
@@ -106,47 +126,53 @@ class Terrain:
                 vertices.extend([x, y, z])
         return np.array(vertices, dtype='f4')
     
-    def generate_side_face_vertices(self):
+    def generate_side_face_vertices(self, side):
         top_vertices = self.generate_top_face_vertices().reshape((self.rows, self.cols, 3))
         vertices = []
-        z = -self.HALF_DEPTH
 
-        for col in range(self.cols): # front side | makes vertical strips of vertices with y same as the current row/col based on which side is being calculated
-            x = -self.HALF_WIDTH + (col / (self.cols - 1)) * self.WIDTH # starts with -20 and then has a factor based on the amount of cols and rows and adds that to the position and then scales that factor because the factor is a number between 0 and 1 and we need it to be between -20 and 20
-            y = 0
-            for row in range(self.rows):
-                if top_vertices[row][col][1] > y:
-                    y = self.BASE_HEIGHT + (row / (self.rows - 1)) * self.HEIGHT
-                vertices.extend([x, y, z])
+        if side == 1:
+            for col in range(self.cols): # front side | makes vertical strips of vertices with y same as the current row/col based on which side is being calculated
+                x = -self.HALF_WIDTH + (col / (self.cols - 1)) * self.WIDTH # starts with -20 and then has a factor based on the amount of cols and rows and adds that to the position and then scales that factor because the factor is a number between 0 and 1 and we need it to be between -20 and 20
+                z = -self.HALF_DEPTH
+                y = 0
+                for row in range(self.rows):
+                    y = self.BASE_HEIGHT + (row / (self.rows - 1)) * (top_vertices[row, col, 1] - self.BASE_HEIGHT)
+                    vertices.extend([x, y, z])
+            return np.array(vertices, dtype='f4')
         
-        for col in range(self.cols): # back side
-            x = -self.HALF_WIDTH + (col / (self.cols - 1)) * self.WIDTH
-            z = self.HALF_DEPTH
-            for row in range(self.rows):
-                if top_vertices[row][col][1] > y:
-                    y = self.BASE_HEIGHT + (row / (self.rows - 1)) * self.HEIGHT
-                vertices.extend([x, y, z])
+        elif side == 2:
+            for col in range(self.cols): # back side
+                x = -self.HALF_WIDTH + (col / (self.cols - 1)) * self.WIDTH
+                z = self.HALF_DEPTH
+                y = 0
+                for row in range(self.rows):
+                    y = self.BASE_HEIGHT + (1 - row / (self.rows - 1)) * (top_vertices[row, col, 1] - self.BASE_HEIGHT)
+                    vertices.extend([x, y, z])
+            return np.array(vertices, dtype='f4')
 
-        for row in range(self.rows): # left side
-            z = -self.HALF_DEPTH + (row / (self.rows - 1)) * self.DEPTH
-            x = -self.HALF_WIDTH
-            for col in range(self.cols):
-                if top_vertices[row][col][1] > y:
-                    y = self.BASE_HEIGHT + (col / (self.cols - 1)) * self.HEIGHT
-                vertices.extend([x, y, z])
+        elif side == 3:
+            for row in range(self.rows): # left side
+                z = -self.HALF_DEPTH + (row / (self.rows - 1)) * self.DEPTH
+                x = -self.HALF_WIDTH
+                y = 0
+                for col in range(self.cols):
+                    y = self.BASE_HEIGHT + (1 - col / (self.cols - 1)) * (top_vertices[row, col, 1] - self.BASE_HEIGHT)
+                    vertices.extend([x, y, z])
+            return np.array(vertices, dtype='f4')
 
-        for row in range(self.rows): # right side
-            z = -self.HALF_DEPTH + (row / (self.rows - 1)) * self.DEPTH
-            x = self.HALF_WIDTH
-            for col in range(self.cols):
-                if top_vertices[row][col][1] > y:
-                    y = self.BASE_HEIGHT + (col / (self.cols - 1)) * self.HEIGHT
-                vertices.extend([x, y, z])
-        return np.array(vertices, dtype='f4')
+        elif side == 4:
+            for row in range(self.rows): # right side
+                z = -self.HALF_DEPTH + (row / (self.rows - 1)) * self.DEPTH
+                x = self.HALF_WIDTH
+                y = 0
+                for col in range(self.cols):
+                    y = self.BASE_HEIGHT + (col / (self.cols - 1)) * (top_vertices[row, col, 1] - self.BASE_HEIGHT)
+                    vertices.extend([x, y, z])
+            return np.array(vertices, dtype='f4')
     
     def generate_top_face_indices(self):
         indices = []
-        offset = len(self.bottom_vertices)
+        offset = len(self.bottom_vertices) + len(self.front_side_vertices) + len(self.back_side_vertices) + len(self.left_side_vertices) + len(self.right_side_vertices)
         for row in range(self.rows - 1): # ifnore the last row because no triangle below it
             for col in range(self.cols - 1):
                 bottom_left = row * self.cols + col + offset
@@ -159,8 +185,59 @@ class Terrain:
 
         return np.array(indices, dtype='i4')
     
-    def generate_side_face_indices(self):
+    def generate_side_face_indices(self, side): # makes the triangles for the side faces
+        indices = []
+        if side == 1:  # front side
+            offset = len(self.bottom_vertices)
+            for row in range(self.rows - 1):
+                for col in range(self.cols - 1):
+                    bottom_left = row * self.cols + col + offset
+                    bottom_right = row * self.cols + (col + 1) + offset
+                    top_left = (row + 1) * self.cols + col + offset
+                    top_right = (row + 1) * self.cols + (col + 1) + offset
+
+                    indices.extend([bottom_left, bottom_right, top_left]) # triangle 1
+                    indices.extend([bottom_right, top_right, top_left]) # triangle 2
+            return np.array(indices, dtype='i4')
         
+        elif side == 2: # back side
+            offset = len(self.bottom_vertices) + len(self.front_side_vertices)
+            for row in range(self.rows - 1):
+                for col in range(self.cols - 1):
+                    bottom_left = row * self.cols + col + offset
+                    bottom_right = row * self.cols + (col + 1) + offset
+                    top_left = (row + 1) * self.cols + col + offset
+                    top_right = (row + 1) * self.cols + (col + 1) + offset
+
+                    indices.extend([bottom_left, bottom_right, top_left])
+                    indices.extend([bottom_right, top_right, top_left])
+            return np.array(indices, dtype='i4')
+        
+        elif side == 3: # left side
+            offset = len(self.bottom_vertices) + len(self.front_side_vertices) + len(self.back_side_vertices)
+            for row in range(self.rows - 1):
+                for col in range(self.cols - 1):
+                    bottom_left = row * self.cols + col + offset
+                    bottom_right = row * self.cols + (col + 1) + offset
+                    top_left = (row + 1) * self.cols + col + offset
+                    top_right = (row + 1) * self.cols + (col + 1) + offset
+
+                    indices.extend([bottom_left, bottom_right, top_left])
+                    indices.extend([bottom_right, top_right, top_left])
+            return np.array(indices, dtype='i4')
+        
+        elif side == 4: # right side
+            offset = len(self.bottom_vertices) + len(self.front_side_vertices) + len(self.back_side_vertices) + len(self.left_side_vertices)
+            for row in range(self.rows - 1):
+                for col in range(self.cols - 1):
+                    bottom_left = row * self.cols + col + offset
+                    bottom_right = row * self.cols + (col + 1) + offset
+                    top_left = (row + 1) * self.cols + col + offset
+                    top_right = (row + 1) * self.cols + (col + 1) + offset
+
+                    indices.extend([bottom_left, bottom_right, top_left])
+                    indices.extend([bottom_right, top_right, top_left])
+            return np.array(indices, dtype='i4')
 
     def create_vbo_ibo_vao(self, program): # vertices buffer object, index buffer object, vertex array object, (vbo, ibo translates the values into bytes)
         vbo = self.ctx.buffer(self.vertices.tobytes()) # (vbo, ibo translates the values into bytes)
@@ -187,7 +264,7 @@ class Terrain:
 
         self.vao.render()
 
-def height_manager(x, z):
+def height_manager(x, z): # make my own height manager that uses perlin noise to generate a terrain
     WIDTH = 20.0
     DEPTH = 40.0
     
@@ -230,11 +307,11 @@ def height_manager(x, z):
     ridge_smooth = (ridge + ridge_left + ridge_right) / 3.0
     ridge_smooth = ridge_smooth ** 1.5
     
-    # 5. Combine ridge with control to chain mountains
+    # Combine ridge with control to chain mountains
     mountain_amplitude = 10.0
     mountain_height = ridge_smooth * control * mountain_amplitude
     
-    # 6. Final height
+    # Final height
     height = base_height + mountain_height
     
     # Clamp minimum height
@@ -261,6 +338,8 @@ def initialize_window():
     
     glfw.make_context_current(window) # connects the window to OpenGL
 
+    glfw.swap_interval(1)
+
     ctx = moderngl.create_context() # modern OpenGL context
     ctx.enable(moderngl.DEPTH_TEST) # makes the closest pixel to the camera display
 
@@ -276,7 +355,7 @@ def main():
         ctx.clear(0.1, 0.1, 0.1, 1.0) # this clears the screen with the color gray before rendering the next frame
 
         view = Matrix44.look_at( # defines the camera position and where it is looking
-            eye = (0.0, 40, -50.0), # the eye is a bit further in the z direction of the center of the scene
+            eye = (0.0, 30, -34.0), # the eye is a bit further in the z direction of the center of the scene
             target = (0.0, 0.0, 0.0), # target is what the camera will be looking at and right now its looking at the origin
             up = (0.0, 1.0, 0.0), # just for the camera to know which way up is
             dtype='f4' # float32
